@@ -23,7 +23,9 @@ PAGE = """
 """
 
 def base_opts():
-    o = {"noplaylist": True, "quiet": True}
+    o = {"noplaylist": True, "quiet": True,
+         # YouTube-এর JS ধাঁধা সমাধানের জন্য node/deno চালু
+         "js_runtimes": {"node": {}, "deno": {}}}
     if os.path.exists(COOKIE_DST):
         o["cookiefile"] = COOKIE_DST
     return o
@@ -36,6 +38,7 @@ def list_formats(url):
     with yt_dlp.YoutubeDL(o) as ydl:
         info = ydl.extract_info(url, download=False)
     lines = ["yt-dlp version: " + yt_dlp.version.__version__,
+             "node: %s | deno: %s" % (shutil.which("node"), shutil.which("deno")),
              "Formats found: %d" % len(info.get("formats") or [])]
     for f in (info.get("formats") or [])[:40]:
         lines.append("%s | %s | %s | v:%s a:%s" % (
