@@ -1,8 +1,14 @@
 from flask import Flask, request, send_file, render_template_string
-import yt_dlp, os
+import yt_dlp, os, shutil
 
 app = Flask(__name__)
 os.makedirs("downloads", exist_ok=True)
+
+# Render Secret File থেকে কুকিজ কপি (থাকলে)
+COOKIE_SRC = "/etc/secrets/cookies.txt"
+COOKIE_DST = "/tmp/cookies.txt"
+if os.path.exists(COOKIE_SRC):
+    shutil.copy(COOKIE_SRC, COOKIE_DST)
 
 PAGE = """
 <!doctype html>
@@ -27,6 +33,8 @@ def home():
             "noplaylist": True,
             "quiet": True,
         }
+        if os.path.exists(COOKIE_DST):
+            opts["cookiefile"] = COOKIE_DST
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
