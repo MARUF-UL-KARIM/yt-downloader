@@ -878,6 +878,10 @@ export async function analyzeMediaUrl(
     if (CONFIG.nodeBin && fs.existsSync(CONFIG.nodeBin)) {
       a.push('--js-runtimes', `node:${CONFIG.nodeBin}`);
     }
+    if (isYt) {
+      // keep yt-dlp's cache (solved YouTube challenges) so repeat requests are fast
+      a.push('--cache-dir', '/tmp/clipfetch_bin/ytdlp-cache', '--socket-timeout', '60');
+    }
     if (CONFIG.ytdlpProxy) {
       a.push('--proxy', CONFIG.ytdlpProxy);
     }
@@ -908,7 +912,8 @@ export async function analyzeMediaUrl(
     let info: RawYtDlpInfo | null = null;
     for (const extra of attemptPlans) {
       const args = [...buildBaseArgs(extra), ...cookiesArg, url];
-      const res = await runCommandWithTimeout(CONFIG.ytdlpBin, args, 35_000);
+      // YouTube needs a JS challenge solved by Node, which is slow on small free servers
+      const res = await runCommandWithTimeout(CONFIG.ytdlpBin, args, isYt ? 150_000 : 35_000);
       if (res.code === 0 && res.stdout.trim()) {
         info = JSON.parse(res.stdout) as RawYtDlpInfo;
         ytdlpError = null;
