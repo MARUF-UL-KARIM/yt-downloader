@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG } from './config.ts';
@@ -854,7 +855,55 @@ async function resolveInfoDuration(info: RawYtDlpInfo): Promise<number | null> {
   return null;
 }
 
+// --- YouTube protection for small servers --------------------------------------------------
+// * one YouTube analysis at a time (parallel yt-dlp runs starve a tiny CPU and all time out)
+// * the same link requested again joins the run already in progress instead of starting another
+// * finished results are kept for 15 minutes so a retry is instant
+const YT_CACHE_TTL_MS = 15 * 60 * 1000;
+const ytResultCache = new Map<string, { at: number; media: AnalyzedMedia }>();
+const ytInflight = new Map<string, Promise<AnalyzedMedia>>();
+let ytQueue: Promise<unknown> = Promise.resolve();
+
 export async function analyzeMediaUrl(
+  url: string,
+  cookiesText?: string | null
+): Promise<AnalyzedMedia> {
+  const usesOwnCookies = Boolean(cookiesText && cookiesText.trim().length > 0);
+  if (!isYouTubeUrl(url) || usesOwnCookies) {
+    return analyzeMediaUrlUncached(url, cookiesText);
+  }
+
+  const hit = ytResultCache.get(url);
+  if (hit && Date.now() - hit.at < YT_CACHE_TTL_MS) {
+    return hit.media;
+  }
+  const running = ytInflight.get(url);
+  if (running) {
+    return running;
+  }
+
+  const job = (async () => {
+    const previous = ytQueue;
+    let release!: () => void;
+    ytQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => {});
+    try {
+      const media = await analyzeMediaUrlUncached(url, cookiesText);
+      ytResultCache.set(url, { at: Date.now(), media });
+      return media;
+    } finally {
+      release();
+    }
+  })();
+
+  ytInflight.set(url, job);
+  job.finally(() => ytInflight.delete(url)).catch(() => {});
+  return job;
+}
+
+export async function analyzeMediaUrlUncached(
   url: string,
   cookiesText?: string | null
 ): Promise<AnalyzedMedia> {
@@ -880,7 +929,11 @@ export async function analyzeMediaUrl(
     }
     if (isYt) {
       // keep yt-dlp's cache (solved YouTube challenges) so repeat requests are fast
-      a.push('--cache-dir', '/tmp/clipfetch_bin/ytdlp-cache', '--socket-timeout', '60');
+      a.push(
+        '--cache-dir', '/tmp/clipfetch_bin/ytdlp-cache',
+        '--socket-timeout', '60',
+        '--extractor-args', 'youtube:skip=translated_subs',
+      );
     }
     if (CONFIG.ytdlpProxy) {
       a.push('--proxy', CONFIG.ytdlpProxy);
@@ -913,7 +966,7 @@ export async function analyzeMediaUrl(
     for (const extra of attemptPlans) {
       const args = [...buildBaseArgs(extra), ...cookiesArg, url];
       // YouTube needs a JS challenge solved by Node, which is slow on small free servers
-      const res = await runCommandWithTimeout(CONFIG.ytdlpBin, args, isYt ? 150_000 : 35_000);
+      const res = await runCommandWithTimeout(CONFIG.ytdlpBin, args, isYt ? 240_000 : 35_000);
       if (res.code === 0 && res.stdout.trim()) {
         info = JSON.parse(res.stdout) as RawYtDlpInfo;
         ytdlpError = null;
@@ -1043,4 +1096,96 @@ export async function getToolVersions(): Promise<{
   ]);
 
   return { ytdlp, ffmpeg, ffprobe };
+}
+
+// --- Diagnostics (no secrets are printed) ----------------------------------------------------
+function redact(text: string): string {
+  return text.replace(/[A-Za-z0-9_\-%.=]{40,}/g, '[redacted]');
+}
+
+function runCapture(
+  bin: string,
+  args: string[],
+  timeoutMs: number
+): Promise<{ code: number | null; out: string; timedOut: boolean; ms: number }> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let timedOut = false;
+    const add = (chunk: Buffer) => {
+      if (out.length < 400_000) out += chunk.toString('utf-8');
+    };
+    child.stdout.on('data', add);
+    child.stderr.on('data', add);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ code: null, out: out + String(err), timedOut, ms: Date.now() - started });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, out, timedOut, ms: Date.now() - started });
+    });
+  });
+}
+
+async function timeFetch(url: string): Promise<string> {
+  const started = Date.now();
+  try {
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(20_000) });
+    return `HTTP ${res.status} in ${Date.now() - started} ms`;
+  } catch (err) {
+    return `FAILED after ${Date.now() - started} ms (${err instanceof Error ? err.message : 'error'})`;
+  }
+}
+
+export async function runYouTubeDiagnostics(url: string): Promise<string> {
+  const lines: string[] = [];
+  const log = (t: string) => lines.push(t);
+
+  const versions = await getToolVersions();
+  log('== Server ==');
+  log(`yt-dlp: ${versions.ytdlp} | ffmpeg: ${versions.ffmpeg ? 'ok' : 'missing'} | ffprobe: ${versions.ffprobe ? 'ok' : 'missing'}`);
+  log(`node (server): ${process.version} | node for yt-dlp: ${CONFIG.nodeBin}`);
+  log(`cpu cores visible: ${os.cpus().length} | loadavg: ${os.loadavg().map((n) => n.toFixed(2)).join(' ')}`);
+  log(`memory: free ${(os.freemem() / 1048576).toFixed(0)} MB of ${(os.totalmem() / 1048576).toFixed(0)} MB | node rss ${(process.memoryUsage().rss / 1048576).toFixed(0)} MB`);
+
+  log('\n== YouTube cookies (names only) ==');
+  if (CONFIG.ytCookiesFile && fs.existsSync(CONFIG.ytCookiesFile)) {
+    const rows = fs
+      .readFileSync(CONFIG.ytCookiesFile, 'utf-8')
+      .split('\n')
+      .filter((l) => l.trim() && !l.startsWith('#'));
+    const names = new Set(rows.map((l) => l.split('\t')[5]).filter(Boolean));
+    const need = ['SID', '__Secure-3PSID', '__Secure-1PSID', 'LOGIN_INFO', 'SAPISID', 'HSID', 'SSID'];
+    log(`cookie rows: ${rows.length} | first line ok: ${fs.readFileSync(CONFIG.ytCookiesFile, 'utf-8').includes('Netscape')}`);
+    log(need.map((n) => `${n}:${names.has(n) ? 'yes' : 'NO'}`).join('  '));
+  } else {
+    log('NO cookie file found (Render Secret File cookies.txt is missing)');
+  }
+
+  log('\n== Network from this server ==');
+  log(`youtube.com: ${await timeFetch('https://www.youtube.com/')}`);
+  log(`github.com: ${await timeFetch('https://github.com/')}`);
+
+  log('\n== yt-dlp run (verbose) ==');
+  const args = [
+    '-v', '--simulate', '--no-playlist',
+    '--cache-dir', '/tmp/clipfetch_bin/ytdlp-cache',
+    '--socket-timeout', '60',
+    '--extractor-args', 'youtube:skip=translated_subs',
+  ];
+  if (CONFIG.nodeBin && fs.existsSync(CONFIG.nodeBin)) args.push('--js-runtimes', `node:${CONFIG.nodeBin}`);
+  if (CONFIG.ytCookiesFile) args.push('--cookies', CONFIG.ytCookiesFile);
+  if (CONFIG.ytdlpProxy) args.push('--proxy', CONFIG.ytdlpProxy);
+  args.push(url);
+  const run = await runCapture(CONFIG.ytdlpBin, args, 280_000);
+  log(`finished in ${(run.ms / 1000).toFixed(1)} s | exit code: ${run.code} | timed out: ${run.timedOut}`);
+  const tail = redact(run.out).split('\n').slice(-70).join('\n');
+  log(tail);
+  return lines.join('\n');
 }

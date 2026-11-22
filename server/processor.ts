@@ -465,6 +465,13 @@ async function downloadWithYtDlp(
     if (CONFIG.nodeBin && fs.existsSync(CONFIG.nodeBin)) {
       args.push('--js-runtimes', `node:${CONFIG.nodeBin}`);
     }
+    if (isYouTubeUrl(input.url)) {
+      args.push(
+        '--cache-dir', '/tmp/clipfetch_bin/ytdlp-cache',
+        '--socket-timeout', '60',
+        '--extractor-args', 'youtube:skip=translated_subs',
+      );
+    }
     if (CONFIG.ytdlpProxy) {
       args.push('--proxy', CONFIG.ytdlpProxy);
     }

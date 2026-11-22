@@ -4,7 +4,7 @@ import express, { type Request, type Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import { ensureTempDir, purgeExpiredDirectories } from './server/cleanup.ts';
 import { CONFIG, ensureYtDlpBinary } from './server/config.ts';
-import { analyzeMediaUrl, getToolVersions } from './server/extractor.ts';
+import { analyzeMediaUrl, getToolVersions, runYouTubeDiagnostics } from './server/extractor.ts';
 import {
   cancelJob,
   cleanupAllActiveJobs,
@@ -15,7 +15,7 @@ import {
   getJobSnapshot,
   subscribeToJob,
 } from './server/processor.ts';
-import { isValidUuid, safeFetchPublic, validatePublicUrl } from './server/validators.ts';
+import { isValidUuid, isYouTubeUrl, safeFetchPublic, validatePublicUrl } from './server/validators.ts';
 
 async function startServer() {
   ensureTempDir();
@@ -45,6 +45,21 @@ async function startServer() {
         maxConcurrentJobs: CONFIG.maxConcurrentJobs,
       },
     });
+  });
+
+  // Troubleshooting page (open in a browser): /api/diag?url=<youtube link>
+  app.get('/api/diag', async (req: Request, res: Response) => {
+    const target = typeof req.query.url === 'string' ? req.query.url : '';
+    res.type('text/plain');
+    if (!isYouTubeUrl(target)) {
+      res.status(400).send('Use: /api/diag?url=<a youtube link>');
+      return;
+    }
+    try {
+      res.send(await runYouTubeDiagnostics(target));
+    } catch (err) {
+      res.status(500).send(String(err));
+    }
   });
 
   app.post('/api/analyze', async (req: Request, res: Response) => {
