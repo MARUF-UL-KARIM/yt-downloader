@@ -36,8 +36,10 @@ def analyze_endpoint():
         return jsonify(result)
     except ValueError as err:
         return jsonify({"error": str(err)}), 422
-    except Exception:
-        return jsonify({"error": "Failed to analyze URL."}), 500
+    except Exception as err:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to analyze URL ({type(err).__name__}: {err})"}), 500
 
 
 @analyze_bp.get("/api/thumbnail")

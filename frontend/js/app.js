@@ -274,6 +274,9 @@
       const media = await analyzer.analyzeUrl(urlInput.value.trim(), (sec) => {
         analyzeBtn.textContent = 'Analyzing... ' + sec + 's (YouTube can take a few minutes)';
       });
+      if (!media || !Array.isArray(media.videoFormats) || !Array.isArray(media.audioFormats)) {
+        throw new Error('Your browser is showing an old version of this page. Please close the tab, reopen the site and try again.');
+      }
       state.media = media;
       state.mode = media.videoFormats.length > 0 ? 'video' : 'audio';
       state.selectedFormatId = media.videoFormats[0]?.id || media.audioFormats[0]?.id || null;
@@ -287,7 +290,8 @@
       updateTrimSummary();
       renderWorkbench();
     } catch (err) {
-      analyzeError.textContent = err.message;
+      const frame = /([\w.-]+\.js):(\d+):(\d+)/.exec(String(err && err.stack));
+      analyzeError.textContent = err.message + (err instanceof TypeError && frame ? ` [${frame[1]}:${frame[2]}]` : '');
       analyzeError.classList.remove('hidden');
     } finally {
       analyzeBtn.disabled = false;
@@ -337,4 +341,12 @@
       analyzeError.classList.remove('hidden');
     }
   });
+})();
+
+// build marker (tiny, bottom of page) so it is obvious which version is running
+(function () {
+  const tag = document.createElement('div');
+  tag.textContent = 'build 2026-11-22-d';
+  tag.style.cssText = 'text-align:center;font-size:11px;opacity:.45;padding:8px';
+  document.body.appendChild(tag);
 })();

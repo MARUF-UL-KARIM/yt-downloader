@@ -2,7 +2,7 @@ import atexit
 import threading
 import time
 from pathlib import Path
-from flask import Flask, send_from_directory
+from flask import Flask, request, send_from_directory
 from flask_cors import CORS
 from backend.config import Config
 from backend.routes.analyze import analyze_bp
@@ -45,6 +45,10 @@ def create_app() -> Flask:
     def add_security_headers(response):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
+        # pages/JS/CSS must always be re-checked, otherwise phones keep an old script
+        # that does not understand newer server replies
+        if not request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.get("/")

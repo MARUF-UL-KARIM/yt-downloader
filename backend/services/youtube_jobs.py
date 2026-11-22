@@ -10,6 +10,7 @@ So the analysis runs in a background thread and the browser polls:
 """
 import threading
 import time
+import traceback
 
 from backend.services.extractor import analyze_media_url
 
@@ -27,8 +28,9 @@ def _run(url: str, job: dict) -> None:
             job["result"] = analyze_media_url(url)
         except ValueError as err:
             job["error"] = str(err)
-        except Exception:
-            job["error"] = "Failed to analyze URL."
+        except Exception as err:
+            traceback.print_exc()
+            job["error"] = f"Failed to analyze URL ({type(err).__name__}: {err})"
         finally:
             job["finished_at"] = time.time()
             job["event"].set()
