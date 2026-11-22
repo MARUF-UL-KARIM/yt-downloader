@@ -1,15 +1,56 @@
+const BAD_PAGE_MSG =
+  'The server sent an unexpected page instead of data (it may be busy, waking up or restarting). Wait a minute and try again.';
+
+async function readJsonSafely(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    throw new Error(BAD_PAGE_MSG);
+  }
+}
+
 window.ClipFetchAnalyzer = {
-  async analyzeUrl(url) {
-    const response = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Could not analyze URL.');
+  readJsonSafely,
+
+  // YouTube can take minutes on a small server, so the server answers 202 ("pending")
+  // and we ask again every few seconds until the result is ready.
+  async analyzeUrl(url, onWait) {
+    const started = Date.now();
+    let poll = false;
+    let badReplies = 0;
+    for (;;) {
+      let response;
+      let data;
+      try {
+        response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, poll }),
+        });
+        data = await readJsonSafely(response);
+      } catch (err) {
+        // while polling, tolerate a few hiccups (proxy error pages, server restarting)
+        if (poll && ++badReplies <= 5) {
+          await new Promise((r) => setTimeout(r, 4000));
+          continue;
+        }
+        throw err;
+      }
+      if (response.status === 202 && data.pending) {
+        poll = true;
+        if (Date.now() - started > 12 * 60 * 1000) {
+          throw new Error('Still not finished after 12 minutes. The server is too slow for this video.');
+        }
+        if (onWait) onWait(Math.round((Date.now() - started) / 1000));
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not analyze URL.');
+      }
+      return data;
     }
-    return data;
   },
 
   formatBytes(bytes) {

@@ -1,11 +1,33 @@
 from collections import deque
 import subprocess
 import threading
+import os
+import re
+import shutil
 from pathlib import Path
 from backend.config import Config
 
 
+def _have_ffprobe() -> bool:
+    b = Config.FFPROBE_BIN
+    return bool(b) and (os.path.exists(b) or shutil.which(b) is not None)
+
+
+def _ffmpeg_info(file_path: Path) -> str:
+    """ffmpeg prints stream info on stderr when given only an input."""
+    try:
+        proc = subprocess.run(
+            [Config.FFMPEG_BIN, "-hide_banner", "-i", str(file_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        return proc.stderr or ""
+    except Exception:
+        return ""
+
+
 def probe_has_audio(file_path: Path) -> bool:
+    if not _have_ffprobe():
+        return " Audio:" in _ffmpeg_info(file_path)
     try:
         proc = subprocess.run(
             [
@@ -30,6 +52,12 @@ def probe_has_audio(file_path: Path) -> bool:
 
 
 def probe_duration(file_path: Path) -> float | None:
+    if not _have_ffprobe():
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", _ffmpeg_info(file_path))
+        if not m:
+            return None
+        total = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        return total if total > 0 else None
     try:
         proc = subprocess.run(
             [

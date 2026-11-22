@@ -5,7 +5,7 @@ window.ClipFetchDownloader = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
+    const data = await window.ClipFetchAnalyzer.readJsonSafely(response);
     if (!response.ok) {
       throw new Error(data.error || 'Could not start download job.');
     }

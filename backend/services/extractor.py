@@ -516,6 +516,14 @@ def analyze_media_url(url: str, cookies_text: str | None = None) -> dict:
         cmd.extend(["--user-agent", STANDARD_BROWSER_UA])
     if Config.NODE_BIN and os.path.exists(Config.NODE_BIN):
         cmd.extend(["--js-runtimes", f"node:{Config.NODE_BIN}"])
+    is_yt = is_youtube_url(url)
+    if is_yt:
+        # keep yt-dlp's cache (solved YouTube challenges) so repeat requests are fast
+        cmd.extend([
+            "--cache-dir", str(Config.TEMP_DIR / "ytdlp-cache"),
+            "--socket-timeout", "60",
+            "--extractor-args", "youtube:skip=translated_subs",
+        ])
     if Config.YTDLP_PROXY:
         cmd.extend(["--proxy", Config.YTDLP_PROXY])
 
@@ -537,7 +545,8 @@ def analyze_media_url(url: str, cookies_text: str | None = None) -> dict:
 
     ytdlp_error = None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
+        # YouTube needs a JS challenge solved by Node, which is slow on small free servers
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=270 if is_yt else 35)
         if proc.returncode == 0 and proc.stdout.strip():
             info = json.loads(proc.stdout)
             if info.get("is_live"):
@@ -594,7 +603,7 @@ def analyze_media_url(url: str, cookies_text: str | None = None) -> dict:
             except Exception:
                 pass
 
-    if direct_ext or (ytdlp_error and "drm" not in ytdlp_error.lower()):
+    if not is_yt and (direct_ext or (ytdlp_error and "drm" not in ytdlp_error.lower())):
         probed = _probe_direct_media(url)
         if probed:
             if probed["duration"] and probed["duration"] > Config.MAX_DURATION_SEC:

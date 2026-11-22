@@ -271,7 +271,9 @@
     analyzeBtn.textContent = 'Analyzing...';
 
     try {
-      const media = await analyzer.analyzeUrl(urlInput.value.trim());
+      const media = await analyzer.analyzeUrl(urlInput.value.trim(), (sec) => {
+        analyzeBtn.textContent = 'Analyzing... ' + sec + 's (YouTube can take a few minutes)';
+      });
       state.media = media;
       state.mode = media.videoFormats.length > 0 ? 'video' : 'audio';
       state.selectedFormatId = media.videoFormats[0]?.id || media.audioFormats[0]?.id || null;

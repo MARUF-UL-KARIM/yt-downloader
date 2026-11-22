@@ -249,6 +249,12 @@ def _download_with_ytdlp(job: dict, payload: dict, output_template: str) -> Path
 
     ephemeral_cookies_path: Path | None = None
     cookies_text = payload.get("cookiesText")
+    if is_youtube_url(payload["url"]):
+        cmd.extend([
+            "--cache-dir", str(Config.TEMP_DIR / "ytdlp-cache"),
+            "--socket-timeout", "60",
+            "--extractor-args", "youtube:skip=translated_subs",
+        ])
     if isinstance(cookies_text, str) and cookies_text.strip():
         ephemeral_cookies_path = job["work_dir"] / "cookies.txt"
         ephemeral_cookies_path.write_text(cookies_text.strip() + "\n", encoding="utf-8")
