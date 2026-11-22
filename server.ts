@@ -20,6 +20,7 @@ import { isValidUuid, safeFetchPublic, validatePublicUrl } from './server/valida
 async function startServer() {
   ensureTempDir();
   await ensureYtDlpBinary();
+  setInterval(() => { ensureYtDlpBinary().catch(() => {}); }, 6 * 60 * 60 * 1000).unref();
   purgeExpiredDirectories(new Set());
 
   const app = express();

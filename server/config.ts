@@ -163,6 +163,33 @@ function linkRuntimeBinary(sourcePath: string, name: string): string {
   }
 }
 
+const YTDLP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const YTDLP_URLS = [
+  // nightly builds get YouTube fixes first; stable is the fallback
+  'https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp_linux',
+  'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux',
+];
+
+async function downloadYtDlp(): Promise<boolean> {
+  fs.mkdirSync(RUNTIME_BIN_DIR, { recursive: true });
+  for (const url of YTDLP_URLS) {
+    try {
+      const response = await fetch(url, { redirect: 'follow' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const buf = Buffer.from(await response.arrayBuffer());
+      if (buf.length < 1_000_000) throw new Error('download too small');
+      const tmp = `${RUNTIME_YTDLP_PATH}.tmp`;
+      fs.writeFileSync(tmp, buf, { mode: 0o755 });
+      fs.chmodSync(tmp, 0o755);
+      fs.renameSync(tmp, RUNTIME_YTDLP_PATH);
+      return true;
+    } catch (err) {
+      console.warn(`Could not download yt-dlp from ${url}:`, err);
+    }
+  }
+  return false;
+}
+
 export async function ensureYtDlpBinary(): Promise<void> {
   materializeEnvCookies();
 
@@ -189,31 +216,27 @@ export async function ensureYtDlpBinary(): Promise<void> {
     CONFIG.ffprobeBin = linkRuntimeBinary(CONFIG.ffprobeBin, 'ffprobe');
   }
 
-  if (fs.existsSync(CONFIG.ytdlpBin)) {
+  // yt-dlp that came from the system / YTDLP_BIN is used as-is.
+  const managed = CONFIG.ytdlpBin === RUNTIME_YTDLP_PATH;
+  if (!managed && fs.existsSync(CONFIG.ytdlpBin)) {
     return;
   }
-
-  const fromPath = resolveFromPath('yt-dlp');
-  if (fromPath) {
-    CONFIG.ytdlpBin = fromPath;
-    return;
-  }
-
-  // Bootstrap standalone yt-dlp_linux binary into /tmp/clipfetch_bin/yt-dlp
-  try {
-    fs.mkdirSync(RUNTIME_BIN_DIR, { recursive: true });
-    const response = await fetch(
-      'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux',
-      { redirect: 'follow' }
-    );
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+  if (!managed) {
+    const fromPath = resolveFromPath('yt-dlp');
+    if (fromPath) {
+      CONFIG.ytdlpBin = fromPath;
+      return;
     }
-    const buf = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(RUNTIME_YTDLP_PATH, buf, { mode: 0o755 });
-    fs.chmodSync(RUNTIME_YTDLP_PATH, 0o755);
+  }
+
+  // Managed standalone binary in /tmp: keep it fresh because YouTube changes often.
+  const ageMs = fs.existsSync(RUNTIME_YTDLP_PATH)
+    ? Date.now() - fs.statSync(RUNTIME_YTDLP_PATH).mtimeMs
+    : Number.POSITIVE_INFINITY;
+  if (ageMs > YTDLP_MAX_AGE_MS) {
+    await downloadYtDlp();
+  }
+  if (fs.existsSync(RUNTIME_YTDLP_PATH)) {
     CONFIG.ytdlpBin = RUNTIME_YTDLP_PATH;
-  } catch (err) {
-    console.warn('Could not auto-download yt-dlp binary:', err);
   }
 }
