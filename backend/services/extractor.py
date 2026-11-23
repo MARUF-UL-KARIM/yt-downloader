@@ -1,4 +1,5 @@
 import json
+import re
 import os
 import subprocess
 import tempfile
@@ -29,8 +30,27 @@ def format_duration(seconds: float | None) -> str:
     return f"{mins}:{secs:02d}"
 
 
+def _yt_hint(stderr: str) -> str:
+    """Short, redacted facts that explain opaque YouTube failures."""
+    notes = []
+    for line in stderr.splitlines():
+        line = line.strip()
+        if line.startswith("WARNING:"):
+            notes.append(re.sub(r"[A-Za-z0-9_\-%.=]{40,}", "[x]", line[8:].strip())[:160])
+    node_ok = bool(Config.NODE_BIN and os.path.exists(Config.NODE_BIN))
+    hint = f" (Node.js for yt-dlp: {'found' if node_ok else 'NOT found'}"
+    if notes:
+        hint += "; yt-dlp notes: " + " | ".join(notes[-3:])
+    return hint + ")"
+
+
 def _classify_error(stderr: str, url: str) -> str:
     lower = stderr.lower()
+    if "youtube" in lower and ("player response" in lower or "requested format is not available" in lower):
+        return (
+            "YouTube did not return a usable player response (cookies expired/rejected, or "
+            "the JavaScript runtime is missing)" + _yt_hint(stderr) + "."
+        )
     if "drm" in lower or "widevine" in lower or "encrypted" in lower:
         return "This media uses DRM or encryption protection and cannot be downloaded."
     if "sign in to confirm" in lower or "not a bot" in lower:
@@ -500,7 +520,7 @@ def _resolve_info_duration(info: dict) -> float | None:
     return None
 
 
-def analyze_media_url(url: str, cookies_text: str | None = None) -> dict:
+def analyze_media_url(url: str, cookies_text: str | None = None, yt_cookies: bool = True) -> dict:
     parsed = urlparse(url)
     direct_ext = has_direct_media_extension(parsed.path)
 
@@ -508,10 +528,11 @@ def analyze_media_url(url: str, cookies_text: str | None = None) -> dict:
         Config.YTDLP_BIN,
         "--dump-single-json",
         "--no-playlist",
-        "--no-warnings",
         "--socket-timeout",
         "20",
     ]
+    if not is_youtube_url(url):
+        cmd.append("--no-warnings")  # YouTube warnings are kept: they explain failures
     if direct_ext:
         cmd.extend(["--user-agent", STANDARD_BROWSER_UA])
     if Config.NODE_BIN and os.path.exists(Config.NODE_BIN):
@@ -537,7 +558,9 @@ def analyze_media_url(url: str, cookies_text: str | None = None) -> dict:
             fh.write(cookies_text.strip() + "\n")
         os.chmod(ephemeral_cookies_path, 0o600)
         cmd.extend(["--cookies", ephemeral_cookies_path])
-    elif is_youtube_url(url) and Config.YT_COOKIES_FILE:
+    elif is_yt and not yt_cookies:
+        pass  # deliberately no cookies: lets yt-dlp use clients that need no JavaScript runtime
+    elif is_yt and Config.YT_COOKIES_FILE:
         cmd.extend(["--cookies", Config.YT_COOKIES_FILE])
     elif Config.COOKIES_FILE:
         cmd.extend(["--cookies", Config.COOKIES_FILE])

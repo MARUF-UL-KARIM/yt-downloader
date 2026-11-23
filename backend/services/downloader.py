@@ -12,6 +12,7 @@ from backend.config import Config
 from backend.services.extractor import STANDARD_BROWSER_UA
 from backend.services.video_processor import process_media_with_ffmpeg
 from backend.utils.cleanup import ensure_temp_dir, purge_expired_directories, remove_dir_safe
+from backend.services import yt_state
 from backend.utils.validators import is_youtube_url, safe_urlopen, sanitize_filename
 
 _jobs_lock = threading.Lock()
@@ -260,6 +261,8 @@ def _download_with_ytdlp(job: dict, payload: dict, output_template: str) -> Path
         ephemeral_cookies_path.write_text(cookies_text.strip() + "\n", encoding="utf-8")
         os.chmod(ephemeral_cookies_path, 0o600)
         cmd.extend(["--cookies", str(ephemeral_cookies_path)])
+    elif is_youtube_url(payload["url"]) and yt_state.prefer_no_cookies():
+        pass  # analysis found that YouTube works better without cookies on this server
     elif is_youtube_url(payload["url"]) and Config.YT_COOKIES_FILE:
         cmd.extend(["--cookies", Config.YT_COOKIES_FILE])
     elif Config.COOKIES_FILE:
