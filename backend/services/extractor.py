@@ -5,11 +5,13 @@ import subprocess
 import tempfile
 from urllib.parse import urlparse
 from backend.config import Config
+from backend.services import yt_state
 from backend.utils.validators import (
     detect_source_name,
     has_direct_media_extension,
     is_youtube_url,
     validate_public_url,
+    youtube_video_id,
 )
 
 STANDARD_BROWSER_UA = (
@@ -520,7 +522,7 @@ def _resolve_info_duration(info: dict) -> float | None:
     return None
 
 
-def analyze_media_url(url: str, cookies_text: str | None = None, yt_cookies: bool = True) -> dict:
+def analyze_media_url(url: str, cookies_text: str | None = None, yt_mode: dict | None = None) -> dict:
     parsed = urlparse(url)
     direct_ext = has_direct_media_extension(parsed.path)
 
@@ -543,7 +545,7 @@ def analyze_media_url(url: str, cookies_text: str | None = None, yt_cookies: boo
         cmd.extend([
             "--cache-dir", str(Config.TEMP_DIR / "ytdlp-cache"),
             "--socket-timeout", "60",
-            "--extractor-args", "youtube:skip=translated_subs",
+            "--extractor-args", yt_state.extractor_args(yt_mode),
         ])
     if Config.YTDLP_PROXY:
         cmd.extend(["--proxy", Config.YTDLP_PROXY])
@@ -558,8 +560,8 @@ def analyze_media_url(url: str, cookies_text: str | None = None, yt_cookies: boo
             fh.write(cookies_text.strip() + "\n")
         os.chmod(ephemeral_cookies_path, 0o600)
         cmd.extend(["--cookies", ephemeral_cookies_path])
-    elif is_yt and not yt_cookies:
-        pass  # deliberately no cookies: lets yt-dlp use clients that need no JavaScript runtime
+    elif is_yt and yt_mode is not None and not yt_mode["cookies"]:
+        pass  # this mode deliberately uses no cookies
     elif is_yt and Config.YT_COOKIES_FILE:
         cmd.extend(["--cookies", Config.YT_COOKIES_FILE])
     elif Config.COOKIES_FILE:
@@ -572,6 +574,8 @@ def analyze_media_url(url: str, cookies_text: str | None = None, yt_cookies: boo
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=270 if is_yt else 35)
         if proc.returncode == 0 and proc.stdout.strip():
             info = json.loads(proc.stdout)
+            if is_yt:
+                yt_state.store_info(youtube_video_id(url), info)
             if info.get("is_live"):
                 raise ValueError("Live streams cannot be pre-analyzed or downloaded as finite files.")
 

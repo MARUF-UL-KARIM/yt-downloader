@@ -24,7 +24,12 @@ def analyze_endpoint():
     uses_own_cookies = bool(cookies_text and cookies_text.strip())
     if is_youtube_url(normalized) and not uses_own_cookies:
         # Long-running: analyse in the background, the browser polls with {"poll": true}
-        status, payload = analyze_with_wait(normalized, fresh=body.get("poll") is not True)
+        prefetch = body.get("prefetch") is True
+        status, payload = analyze_with_wait(
+            normalized,
+            fresh=body.get("poll") is not True and not prefetch,
+            wait_seconds=0 if prefetch else 20.0,
+        )
         if status == "pending":
             return jsonify({"pending": True}), 202
         if status == "error":

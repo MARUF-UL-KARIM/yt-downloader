@@ -1,6 +1,7 @@
 import os
 import queue
 import re
+import json
 import subprocess
 import threading
 import time
@@ -13,7 +14,7 @@ from backend.services.extractor import STANDARD_BROWSER_UA
 from backend.services.video_processor import process_media_with_ffmpeg
 from backend.utils.cleanup import ensure_temp_dir, purge_expired_directories, remove_dir_safe
 from backend.services import yt_state
-from backend.utils.validators import is_youtube_url, safe_urlopen, sanitize_filename
+from backend.utils.validators import is_youtube_url, safe_urlopen, sanitize_filename, youtube_video_id
 
 _jobs_lock = threading.Lock()
 _jobs: dict[str, dict] = {}
@@ -226,6 +227,8 @@ def _download_direct_http(job: dict, url: str, target_path: Path) -> None:
 
 
 def _download_with_ytdlp(job: dict, payload: dict, output_template: str) -> Path:
+    url = payload["url"]
+    is_yt = is_youtube_url(url)
     cmd = [
         Config.YTDLP_BIN,
         "--no-playlist",
@@ -250,20 +253,22 @@ def _download_with_ytdlp(job: dict, payload: dict, output_template: str) -> Path
 
     ephemeral_cookies_path: Path | None = None
     cookies_text = payload.get("cookiesText")
-    if is_youtube_url(payload["url"]):
+    has_own_cookies = isinstance(cookies_text, str) and bool(cookies_text.strip())
+    yt_mode = yt_state.current_mode() if is_yt else None
+    if is_yt:
         cmd.extend([
             "--cache-dir", str(Config.TEMP_DIR / "ytdlp-cache"),
             "--socket-timeout", "60",
-            "--extractor-args", "youtube:skip=translated_subs",
+            "--extractor-args", yt_state.extractor_args(yt_mode),
         ])
-    if isinstance(cookies_text, str) and cookies_text.strip():
+    if has_own_cookies:
         ephemeral_cookies_path = job["work_dir"] / "cookies.txt"
         ephemeral_cookies_path.write_text(cookies_text.strip() + "\n", encoding="utf-8")
         os.chmod(ephemeral_cookies_path, 0o600)
         cmd.extend(["--cookies", str(ephemeral_cookies_path)])
-    elif is_youtube_url(payload["url"]) and yt_state.prefer_no_cookies():
-        pass  # analysis found that YouTube works better without cookies on this server
-    elif is_youtube_url(payload["url"]) and Config.YT_COOKIES_FILE:
+    elif is_yt and yt_mode is not None and not yt_mode["cookies"]:
+        pass  # the mode that works on this server uses no cookies
+    elif is_yt and Config.YT_COOKIES_FILE:
         cmd.extend(["--cookies", Config.YT_COOKIES_FILE])
     elif Config.COOKIES_FILE:
         cmd.extend(["--cookies", Config.COOKIES_FILE])
@@ -280,64 +285,89 @@ def _download_with_ytdlp(job: dict, payload: dict, output_template: str) -> Path
     else:
         cmd.extend(["-f", "bestvideo+bestaudio/best"])
 
-    cmd.append(payload["url"])
+    def _run(full_cmd: list[str]) -> None:
+        proc = subprocess.Popen(
+            full_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        job["active_proc"] = proc
+        error_lines: list[str] = []
+        try:
+            if proc.stdout:
+                for raw_line in proc.stdout:
+                    if job["status"] == "cancelled":
+                        proc.terminate()
+                        raise RuntimeError("Download cancelled by user.")
+                    line = raw_line.strip()
+                    if line.startswith("ERROR:"):
+                        error_lines.append(line[6:].strip())
+                    if "[Merger]" in line or "Merging formats" in line:
+                        job["status"] = "merging"
+                        job["phaseLabel"] = "Merging video & audio streams with FFmpeg"
+                        job["progress"] = 95
+                        _emit_update(job)
+                        continue
+                    m = YTDLP_PROGRESS_RE.search(line)
+                    if m:
+                        pct = float(m.group(1))
+                        total_b = _parse_size_to_bytes(m.group(2))
+                        job["status"] = "downloading"
+                        job["phaseLabel"] = "Downloading media stream"
+                        job["progress"] = min(99, round(pct))
+                        if total_b:
+                            job["totalBytes"] = total_b
+                            job["downloadedBytes"] = round(total_b * (job["progress"] / 100.0))
+                        job["speedText"] = m.group(3)
+                        job["etaText"] = m.group(4)
+                        _emit_update(job)
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    job["active_proc"] = proc
-    error_lines = []
+            rc = proc.wait(timeout=Config.JOB_TIMEOUT_SEC)
+            if job["status"] == "cancelled":
+                raise RuntimeError("Download cancelled by user.")
+            if rc != 0:
+                raise RuntimeError(error_lines[0] if error_lines else f"yt-dlp exited with code {rc}")
+        finally:
+            job["active_proc"] = None
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    # Attempt 1 (YouTube, fast): start straight from the info the analysis already extracted,
+    # which skips a second slow extraction. Attempt 2: the normal full run.
+    attempts: list[list[str]] = []
+    info_path: Path | None = None
+    cached = yt_state.get_info(youtube_video_id(url)) if (is_yt and not has_own_cookies) else None
+    if cached:
+        try:
+            info_path = job["work_dir"] / "info.json"
+            info_path.write_text(json.dumps(cached), encoding="utf-8")
+            os.chmod(info_path, 0o600)
+            attempts.append(cmd + ["--load-info-json", str(info_path)])
+        except Exception:
+            info_path = None
+    attempts.append(cmd + [url])
 
     try:
-        if proc.stdout:
-            for raw_line in proc.stdout:
-                if job["status"] == "cancelled":
-                    proc.terminate()
-                    raise RuntimeError("Download cancelled by user.")
-                line = raw_line.strip()
-                if line.startswith("ERROR:"):
-                    error_lines.append(line[6:].strip())
-                if "[Merger]" in line or "Merging formats" in line:
-                    job["status"] = "merging"
-                    job["phaseLabel"] = "Merging video & audio streams with FFmpeg"
-                    job["progress"] = 95
-                    _emit_update(job)
-                    continue
-                m = YTDLP_PROGRESS_RE.search(line)
-                if m:
-                    pct = float(m.group(1))
-                    total_b = _parse_size_to_bytes(m.group(2))
-                    job["status"] = "downloading"
-                    job["phaseLabel"] = "Downloading media stream"
-                    job["progress"] = min(99, round(pct))
-                    if total_b:
-                        job["totalBytes"] = total_b
-                        job["downloadedBytes"] = round(total_b * (job["progress"] / 100.0))
-                    job["speedText"] = m.group(3)
-                    job["etaText"] = m.group(4)
-                    _emit_update(job)
-
-        rc = proc.wait(timeout=Config.JOB_TIMEOUT_SEC)
-        if job["status"] == "cancelled":
-            raise RuntimeError("Download cancelled by user.")
-        if rc != 0:
-            raise RuntimeError(error_lines[0] if error_lines else f"yt-dlp exited with code {rc}")
+        for i, full_cmd in enumerate(attempts):
+            try:
+                _run(full_cmd)
+                break
+            except RuntimeError:
+                if job["status"] == "cancelled" or i == len(attempts) - 1:
+                    raise
+                job["progress"] = 0  # fast attempt failed (e.g. expired link): do the full run
     finally:
-        job["active_proc"] = None
-        if proc.poll() is None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        if ephemeral_cookies_path and ephemeral_cookies_path.exists():
-            try:
-                ephemeral_cookies_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        for leftover in (ephemeral_cookies_path, info_path):
+            if leftover and leftover.exists():
+                try:
+                    leftover.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     files = [p for p in job["work_dir"].iterdir() if p.name.startswith("source.")]
     if not files:

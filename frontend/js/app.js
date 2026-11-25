@@ -343,10 +343,36 @@
   });
 })();
 
+// Prefetch: as soon as a YouTube link is pasted/typed, ask the server to start analysing it
+// in the background. By the time "Analyze" is pressed the result is usually ready.
+(function () {
+  const input = document.getElementById('urlInput');
+  if (!input) return;
+  const YT = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)\//i;
+  let timer = null;
+  let lastUrl = '';
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const url = input.value.trim();
+      if (!YT.test(url) || url === lastUrl) return;
+      lastUrl = url;
+      fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, prefetch: true }),
+      }).catch(() => {});
+    }, 500);
+  }
+  input.addEventListener('input', schedule);
+  input.addEventListener('paste', schedule);
+  input.addEventListener('change', schedule);
+})();
+
 // build marker (tiny, bottom of page) so it is obvious which version is running
 (function () {
   const tag = document.createElement('div');
-  tag.textContent = 'build 2026-11-22-e';
+  tag.textContent = 'build 2026-11-22-f';
   tag.style.cssText = 'text-align:center;font-size:11px;opacity:.45;padding:8px';
   document.body.appendChild(tag);
 })();

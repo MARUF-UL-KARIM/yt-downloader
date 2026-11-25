@@ -68,6 +68,25 @@ def is_youtube_url(url: str) -> bool:
     return host in {"youtube.com", "youtu.be", "youtube-nocookie.com"} or host.endswith(".youtube.com")
 
 
+def youtube_video_id(url: str) -> str | None:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    vid = None
+    if host == "youtu.be":
+        vid = parsed.path.strip("/").split("/")[0]
+    else:
+        from urllib.parse import parse_qs
+        vid = (parse_qs(parsed.query).get("v") or [None])[0]
+        if not vid:
+            parts = [x for x in parsed.path.split("/") if x]
+            if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live", "v"}:
+                vid = parts[1]
+    return vid if vid and len(vid) >= 6 else None
+
+
 def detect_source_name(parsed_url) -> str:
     host = (parsed_url.hostname or "").lower().removeprefix("www.")
     if host in {"youtube.com", "youtu.be"} or host.endswith(".youtube.com"):

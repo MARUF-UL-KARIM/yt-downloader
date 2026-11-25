@@ -24,22 +24,23 @@ _jobs: dict[str, dict] = {}
 
 
 def _analyze(url: str) -> dict:
-    """Try the preferred cookie mode first; if YouTube rejects it, try the other one."""
-    first_with_cookies = not yt_state.prefer_no_cookies()
-    try:
-        result = analyze_media_url(url, None, yt_cookies=first_with_cookies)
-        return result
-    except ValueError as first_err:
-        message = str(first_err).lower()
-        retryable = any(k in message for k in ("player response", "bot verification", "no downloadable", "not available"))
-        if not retryable:
-            raise
+    """Try the remembered working mode first, then the others, until one works."""
+    first_error: ValueError | None = None
+    for mode in yt_state.ordered_modes():
         try:
-            result = analyze_media_url(url, None, yt_cookies=not first_with_cookies)
-        except ValueError:
-            raise first_err
-        yt_state.set_prefer_no_cookies(first_with_cookies)  # the other mode is the one that works
+            result = analyze_media_url(url, None, yt_mode=mode)
+        except ValueError as err:
+            message = str(err).lower()
+            retryable = any(k in message for k in (
+                "player response", "bot verification", "no downloadable", "not available", "failed to analyze",
+            ))
+            if not retryable:
+                raise
+            first_error = first_error or err
+            continue
+        yt_state.remember(mode["name"])
         return result
+    raise first_error or ValueError("Failed to analyze URL.")
 
 
 def _run(url: str, job: dict) -> None:
