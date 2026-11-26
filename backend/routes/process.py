@@ -11,7 +11,7 @@ def health_endpoint():
     return jsonify(
         {
             "status": "ok",
-            "build": "2026-11-22-f",
+            "build": "2026-11-22-g",
             "tools": get_tool_versions(),
             "activeJobs": get_active_job_count(),
             "limits": {

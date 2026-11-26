@@ -51,6 +51,33 @@ def probe_has_audio(file_path: Path) -> bool:
         return False
 
 
+def probe_codecs(file_path: Path) -> tuple[str | None, str | None]:
+    """First video and audio codec names (e.g. ("h264", "aac")); None when absent/unknown."""
+    vcodec = acodec = None
+    if _have_ffprobe():
+        try:
+            proc = subprocess.run(
+                [Config.FFPROBE_BIN, "-v", "error", "-show_entries", "stream=codec_name,codec_type",
+                 "-of", "csv=p=0", str(file_path)],
+                capture_output=True, text=True, timeout=15,
+            )
+            for line in proc.stdout.splitlines():
+                name, _, kind = line.strip().partition(",")
+                if kind == "video" and not vcodec:
+                    vcodec = name
+                elif kind == "audio" and not acodec:
+                    acodec = name
+            return vcodec, acodec
+        except Exception:
+            pass
+    info = _ffmpeg_info(file_path)
+    m = re.search(r"Video:\s*([A-Za-z0-9_]+)", info)
+    vcodec = m.group(1).lower() if m else None
+    m = re.search(r"Audio:\s*([A-Za-z0-9_]+)", info)
+    acodec = m.group(1).lower() if m else None
+    return vcodec, acodec
+
+
 def probe_duration(file_path: Path) -> float | None:
     if not _have_ffprobe():
         m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", _ffmpeg_info(file_path))
@@ -106,6 +133,9 @@ def process_media_with_ffmpeg(
 ) -> None:
     source_duration = probe_duration(source_path) or job.get("duration") or 0.0
     has_audio = probe_has_audio(source_path)
+    vcodec, acodec = probe_codecs(source_path)
+    # codecs every phone gallery / player understands inside an MP4
+    mp4_ready = (vcodec in (None, "h264", "hevc")) and (acodec in (None, "aac", "mp3"))
 
     if mode == "audio" and not has_audio:
         raise RuntimeError("Source media contains no audio track to extract.")
@@ -139,10 +169,21 @@ def process_media_with_ffmpeg(
             cmd.extend(["-c:a", "libmp3lame", "-b:a", "192k"])
         else:
             cmd.extend(["-c:a", "aac", "-b:a", "192k"])
-    elif (not trim_enabled) and (not speed_changed) and source_ext == container:
-        cmd.extend(["-c", "copy"])
+    elif (not trim_enabled) and (not speed_changed) and (
+        (container == "mp4" and mp4_ready) or (container != "mp4" and source_ext == container)
+    ):
         if container == "mp4":
+            # Re-wrap into a proper MP4 (no re-encode): writes the moov index + duration at the
+            # start, which fixes fragmented/DASH files from Facebook, Instagram etc. that show
+            # "00:00" or do not appear in the Gallery.
+            cmd.extend(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-c", "copy"])
+            if vcodec == "hevc":
+                cmd.extend(["-tag:v", "hvc1"])
+            elif vcodec == "h264":
+                cmd.extend(["-tag:v", "avc1"])
             cmd.extend(["-movflags", "+faststart"])
+        else:
+            cmd.extend(["-c", "copy"])
     else:
         vfilters = ["scale=trunc(iw/2)*2:trunc(ih/2)*2"]
         if speed_changed:

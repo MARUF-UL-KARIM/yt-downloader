@@ -402,6 +402,7 @@ def _run_pipeline(job: dict, payload: dict) -> None:
             or trim_enabled
             or abs(speed - 1.0) > 1e-6
             or source_ext != payload["container"]
+            or payload["container"] == "mp4"  # always re-wrap: fixes 00:00 / Gallery-invisible files
         )
 
         clean_title = sanitize_filename(payload.get("title") or "video")
@@ -421,7 +422,7 @@ def _run_pipeline(job: dict, payload: dict) -> None:
                 if abs(speed - 1.0) > 1e-6
                 else "Trimming video segment with FFmpeg"
                 if trim_enabled
-                else f"Converting media to {payload['container'].upper()}"
+                else f"Finalizing {payload['container'].upper()} file"
             )
             job["progress"] = 0
             job["speedText"] = None

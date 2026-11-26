@@ -372,7 +372,7 @@
 // build marker (tiny, bottom of page) so it is obvious which version is running
 (function () {
   const tag = document.createElement('div');
-  tag.textContent = 'build 2026-11-22-f';
+  tag.textContent = 'build 2026-11-22-g';
   tag.style.cssText = 'text-align:center;font-size:11px;opacity:.45;padding:8px';
   document.body.appendChild(tag);
 })();
