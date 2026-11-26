@@ -348,15 +348,17 @@
 (function () {
   const input = document.getElementById('urlInput');
   if (!input) return;
-  const YT = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)\//i;
+  // only a complete link counts: it must contain an 11-character video id
+  const YT = /^https?:\/\/((www|m|music)\.)?(youtube\.com\/(watch\?(.*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/)[A-Za-z0-9_-]{11}([&?#\/].*)?$/i;
+  const idOf = (u) => (u.match(/(?:v=|youtu\.be\/|shorts\/|live\/|embed\/)([A-Za-z0-9_-]{11})/) || [])[1];
   let timer = null;
   let lastUrl = '';
   function schedule() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       const url = input.value.trim();
-      if (!YT.test(url) || url === lastUrl) return;
-      lastUrl = url;
+      if (!YT.test(url) || idOf(url) === lastUrl) return;
+      lastUrl = idOf(url);
       fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -366,13 +368,12 @@
   }
   input.addEventListener('input', schedule);
   input.addEventListener('paste', schedule);
-  input.addEventListener('change', schedule);
 })();
 
 // build marker (tiny, bottom of page) so it is obvious which version is running
 (function () {
   const tag = document.createElement('div');
-  tag.textContent = 'build 2026-11-22-h';
+  tag.textContent = 'build 2026-11-22-i';
   tag.style.cssText = 'text-align:center;font-size:11px;opacity:.45;padding:8px';
   document.body.appendChild(tag);
 })();

@@ -88,3 +88,18 @@ def get_info(video_id: str | None) -> dict | None:
         if entry and time.time() - entry["at"] < INFO_TTL:
             return entry["info"]
     return None
+
+
+# --- cooldown -------------------------------------------------------------------------------
+# When YouTube answers 429 (too many requests) for this server's IP, every further request makes
+# the block last longer. So we stop talking to YouTube for a while and say so immediately.
+_blocked_until = 0.0
+
+
+def block_for(seconds: float) -> None:
+    global _blocked_until
+    _blocked_until = max(_blocked_until, time.time() + seconds)
+
+
+def blocked_seconds_left() -> int:
+    return max(0, int(_blocked_until - time.time()))

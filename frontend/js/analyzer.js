@@ -39,8 +39,8 @@ window.ClipFetchAnalyzer = {
       }
       if (response.status === 202 && data.pending) {
         poll = true;
-        if (Date.now() - started > 12 * 60 * 1000) {
-          throw new Error('Still not finished after 12 minutes. The server is too slow for this video.');
+        if (Date.now() - started > 5 * 60 * 1000) {
+          throw new Error('Still not finished after 5 minutes. Please try again later.');
         }
         if (onWait) onWait(Math.round((Date.now() - started) / 1000));
         await new Promise((r) => setTimeout(r, 3000));

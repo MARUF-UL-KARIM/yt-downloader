@@ -48,6 +48,11 @@ def _yt_hint(stderr: str) -> str:
 
 def _classify_error(stderr: str, url: str) -> str:
     lower = stderr.lower()
+    if "youtube" in lower and ("429" in lower or "too many requests" in lower):
+        return (
+            "YouTube is rate-limiting this server's IP address (HTTP 429: too many requests). "
+            "Please wait about 15 minutes and try again. Trying again sooner makes the block last longer."
+        )
     if "youtube" in lower and ("player response" in lower or "requested format is not available" in lower):
         return (
             "YouTube did not return a usable player response (cookies expired/rejected, or "
@@ -544,7 +549,8 @@ def analyze_media_url(url: str, cookies_text: str | None = None, yt_mode: dict |
         # keep yt-dlp's cache (solved YouTube challenges) so repeat requests are fast
         cmd.extend([
             "--cache-dir", str(Config.TEMP_DIR / "ytdlp-cache"),
-            "--socket-timeout", "60",
+            "--socket-timeout", "30",
+            "--extractor-retries", "1",   # do not hammer YouTube with retries when it says no
             "--extractor-args", yt_state.extractor_args(yt_mode),
         ])
     if Config.YTDLP_PROXY:
@@ -573,7 +579,7 @@ def analyze_media_url(url: str, cookies_text: str | None = None, yt_mode: dict |
         # YouTube needs a JS challenge solved by Node, which is slow on small free servers
         if is_yt:
             # the fast single-client mode must answer quickly; if not, move on to the next mode
-            limit = 75 if (yt_mode and yt_mode.get("name") == "vr") else 270
+            limit = 60 if (yt_mode and yt_mode.get("name") == "vr") else 120
         else:
             limit = 35
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit)
