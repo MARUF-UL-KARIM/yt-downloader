@@ -3,7 +3,6 @@ import re
 import os
 import subprocess
 import tempfile
-import threading
 from urllib.parse import urlparse
 from backend.config import Config
 from backend.services import yt_state
@@ -523,93 +522,6 @@ def _resolve_info_duration(info: dict) -> float | None:
     return None
 
 
-class _Proc:
-    """Looks like subprocess.CompletedProcess so the code below handles both the same way."""
-
-    def __init__(self, returncode: int, stdout: str, stderr: str):
-        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
-
-
-class _CaptureLogger:
-    def __init__(self):
-        self.lines: list[str] = []
-
-    def debug(self, msg):
-        pass
-
-    def info(self, msg):
-        pass
-
-    def warning(self, msg):
-        self.lines.append("WARNING: " + str(msg))
-
-    def error(self, msg):
-        self.lines.append("ERROR: " + str(msg))
-
-
-def _ytdlp_inprocess(url: str, yt_mode: dict) -> "_Proc | None":
-    """Run yt-dlp inside this Python process.
-
-    Saves the 3-10 s a fresh yt-dlp process needs to start on a small server, because yt-dlp
-    stays imported. Returns None when it cannot be used (caller then starts the normal process).
-    """
-    try:
-        import yt_dlp
-    except Exception:
-        return None
-
-    logger = _CaptureLogger()
-    extractor_args: dict = {"skip": ["translated_subs"]}
-    if yt_mode.get("client"):
-        extractor_args["player_client"] = [yt_mode["client"]]
-    opts: dict = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "socket_timeout": 60,
-        "cachedir": str(Config.TEMP_DIR / "ytdlp-cache"),
-        "extractor_args": {"youtube": extractor_args},
-        "logger": logger,
-    }
-    if Config.NODE_BIN and os.path.exists(Config.NODE_BIN):
-        opts["js_runtimes"] = {"node": {"path": Config.NODE_BIN}}
-    if yt_mode.get("cookies") and Config.YT_COOKIES_FILE:
-        opts["cookiefile"] = Config.YT_COOKIES_FILE
-    if Config.YTDLP_PROXY:
-        opts["proxy"] = Config.YTDLP_PROXY
-
-    box: dict = {}
-
-    def work():
-        try:
-            Config.TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                box["info"] = ydl.sanitize_info(info)
-        except Exception as err:  # yt_dlp.utils.DownloadError and friends
-            box["error"] = str(err)
-
-    thread = threading.Thread(target=work, daemon=True)
-    thread.start()
-    thread.join(timeout=270)
-    if thread.is_alive():
-        return _Proc(1, "", "ERROR: Media inspection timed out. The remote server took too long to respond.")
-    if "info" in box:
-        return _Proc(0, json.dumps(box["info"], default=str), "\n".join(logger.lines))
-    return _Proc(1, "", "\n".join(logger.lines + [box.get("error", "ERROR: yt-dlp failed")]))
-
-
-def _prewarm_ytdlp() -> None:
-    try:
-        import yt_dlp  # noqa: F401
-        import yt_dlp.extractor.youtube  # noqa: F401
-    except Exception:
-        pass
-
-
-threading.Thread(target=_prewarm_ytdlp, daemon=True).start()
-
-
 def analyze_media_url(url: str, cookies_text: str | None = None, yt_mode: dict | None = None) -> dict:
     parsed = urlparse(url)
     direct_ext = has_direct_media_extension(parsed.path)
@@ -659,11 +571,12 @@ def analyze_media_url(url: str, cookies_text: str | None = None, yt_mode: dict |
     ytdlp_error = None
     try:
         # YouTube needs a JS challenge solved by Node, which is slow on small free servers
-        proc = None
-        if is_yt and yt_mode is not None and not (cookies_text and cookies_text.strip()):
-            proc = _ytdlp_inprocess(url, yt_mode)
-        if proc is None:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=270 if is_yt else 35)
+        if is_yt:
+            # the fast single-client mode must answer quickly; if not, move on to the next mode
+            limit = 75 if (yt_mode and yt_mode.get("name") == "vr") else 270
+        else:
+            limit = 35
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit)
         if proc.returncode == 0 and proc.stdout.strip():
             info = json.loads(proc.stdout)
             if is_yt:

@@ -32,7 +32,7 @@ def _analyze(url: str) -> dict:
         except ValueError as err:
             message = str(err).lower()
             retryable = any(k in message for k in (
-                "player response", "bot verification", "no downloadable", "not available", "failed to analyze",
+                "player response", "bot verification", "no downloadable", "not available", "failed to analyze", "timed out",
             ))
             if not retryable:
                 raise
